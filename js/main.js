@@ -176,7 +176,6 @@
       pickup() { tone(480, 780, 0.08, 0.09); },
       drop() { tone(200, 90, 0.14, 0.14); noise(0.05, 700, 0.04); },
       snap() { tone(1300, 1250, 0.03, 0.08, 'square'); tone(1700, 1650, 0.04, 0.07, 'square', 0.05); },
-      bump() { tone(260, 160, 0.06, 0.07); },
       reset() { [523, 659, 784, 1047].forEach((f, i) => tone(f, f, 0.12, 0.06, 'triangle', i * 0.07)); },
       effect(type) { (EFFECT_SOUNDS[type] || (() => {}))(); },
     };
@@ -499,7 +498,7 @@
     return fx;
   }
 
-  // ---------- 動き（持ち上げ・傾き・投げ・ばね） ----------
+  // ---------- 動き（持ち上げ・傾き・ばね） ----------
   const active = new Set(); // 動きの計算が必要な都道府県
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
@@ -511,19 +510,12 @@
     return { x0: tl.x, y0: tl.y, x1: br.x, y1: br.y };
   }
 
-  // 中心が画面の外に出ないようにする。はみ出したら true
+  // 中心が画面の外に出ないようにする
   function keepInside(pref) {
     const b = visibleBounds();
     const m = 14;
-    const x = pref.cx + pref.dx;
-    const y = pref.cy + pref.dy;
-    const cx = clamp(x, b.x0 + m, b.x1 - m);
-    const cy = clamp(y, b.y0 + m + 30, b.y1 - m);
-    const hitX = cx !== x;
-    const hitY = cy !== y;
-    if (hitX) pref.dx = cx - pref.cx;
-    if (hitY) pref.dy = cy - pref.cy;
-    return { hitX, hitY };
+    pref.dx = clamp(pref.cx + pref.dx, b.x0 + m, b.x1 - m) - pref.cx;
+    pref.dy = clamp(pref.cy + pref.dy, b.y0 + m + 30, b.y1 - m) - pref.cy;
   }
 
   function wake(pref) { active.add(pref); }
@@ -544,20 +536,7 @@
 
   function stepPref(pref, f) {
     // 位置
-    if (pref.mode === 'glide') {
-      pref.dx += pref.vx * f;
-      pref.dy += pref.vy * f;
-      const fr = Math.pow(0.93, f);
-      pref.vx *= fr;
-      pref.vy *= fr;
-      const { hitX, hitY } = keepInside(pref);
-      if (hitX) { pref.vx *= -0.55; Sound.bump(); }
-      if (hitY) { pref.vy *= -0.55; Sound.bump(); }
-      if (Math.hypot(pref.vx, pref.vy) < 0.25) {
-        if (Math.hypot(pref.dx, pref.dy) < HOME_SNAP) goHome(pref, true);
-        else { pref.mode = 'idle'; settle(pref); }
-      }
-    } else if (pref.mode === 'home') {
+    if (pref.mode === 'home') {
       // ばね（少しだけ行き過ぎて戻る）
       pref.vx += (-0.09 * pref.dx - 0.32 * pref.vx) * f;
       pref.vy += (-0.09 * pref.dy - 0.32 * pref.vy) * f;
@@ -660,7 +639,7 @@
     drags.set(e.pointerId, {
       pref, sx: e.clientX, sy: e.clientY,
       gx: pt.x - pref.dx, gy: pt.y - pref.dy, // つかんだ位置のずれ
-      samples: [{ t: e.timeStamp, x: pt.x, y: pt.y }], fx: null,
+      fx: null,
     });
     svg.setPointerCapture(e.pointerId);
     pref.mode = 'drag';
@@ -676,14 +655,7 @@
   svg.addEventListener('pointermove', (e) => {
     const d = drags.get(e.pointerId);
     if (!d) return;
-    const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
-    const last = evs.length ? evs[evs.length - 1] : e;
-    const pt = toSvg(last.clientX, last.clientY);
-    for (const ev of (evs.length ? evs : [e])) {
-      const p = toSvg(ev.clientX, ev.clientY);
-      d.samples.push({ t: ev.timeStamp, x: p.x, y: p.y });
-    }
-    while (d.samples.length > 2 && e.timeStamp - d.samples[0].t > 90) d.samples.shift();
+    const pt = toSvg(e.clientX, e.clientY);
 
     if (!d.fx) {
       if (Math.hypot(e.clientX - d.sx, e.clientY - d.sy) < 5) return; // タップだけでは発動しない
@@ -708,24 +680,8 @@
     pref.liftT = pref.hover ? 0.35 : 0;
     if (d.fx) d.fx.release();
 
-    // 離した瞬間の速さ（60fps の1フレームあたり）
-    const s = d.samples;
-    let vx = 0;
-    let vy = 0;
-    if (s.length >= 2 && e.timeStamp - s[s.length - 1].t < 60) {
-      const a = s[0];
-      const b = s[s.length - 1];
-      const dt = Math.max(8, b.t - a.t) / (1000 / 60);
-      vx = (b.x - a.x) / dt;
-      vy = (b.y - a.y) / dt;
-    }
-    const speed = Math.hypot(vx, vy);
-    if (speed > 1.2) {
-      const k = Math.min(1, 40 / speed); // 投げすぎ防止
-      pref.vx = vx * k;
-      pref.vy = vy * k;
-      pref.mode = 'glide';
-    } else if (Math.hypot(pref.dx, pref.dy) < HOME_SNAP) {
+    // 離した場所でぴたっと止まる（元の場所の近くなら吸い付く）
+    if (Math.hypot(pref.dx, pref.dy) < HOME_SNAP) {
       goHome(pref, true);
     } else {
       pref.mode = 'idle';
