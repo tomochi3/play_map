@@ -4,10 +4,10 @@ const fs = require('fs');
 const gj = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
 const out = process.argv[3];
 const K = Math.cos(36 * Math.PI / 180);
-// Okinawa inset: move to the empty upper-left area of the map
-const OKI_DX = 5.6, OKI_DY = 14.5;
-function proj([lon, lat], id) {
-  if (id === 47) { lon += OKI_DX; lat += OKI_DY; }
+// 差し込み枠: 地図左上の空いている海へ移動
+const OKI_DX = 5.7, OKI_DY = 15;
+function proj([lon, lat], inset) {
+  if (inset) { lon += OKI_DX; lat += OKI_DY; }
   return [lon * K, -lat];
 }
 function dp(pts, eps) {
@@ -29,11 +29,18 @@ function dp(pts, eps) {
 }
 function area(r) { let s = 0; for (let i = 0; i < r.length; i++) { const [a, b] = r[i], [c, d] = r[(i + 1) % r.length]; s += a * d - c * b; } return s / 2; }
 
+const insetBox = [Infinity, Infinity, -Infinity, -Infinity];
 const feats = gj.features.map(f => {
   const id = f.properties.id;
   const polys = f.geometry.type === 'Polygon' ? [f.geometry.coordinates] : f.geometry.coordinates;
   const kept = polys.filter(p => !p[0].every(([lon, lat]) => (id === 13 && lat < 31) || (id === 47 && lon > 130)));
-  return { id, name: f.properties.nam_ja, polys: kept.map(p => p[0].map(c => proj(c, id))) };
+  return { id, name: f.properties.nam_ja, polys: kept.map(p => {
+    // 沖縄と、鹿児島の奄美・トカラ列島（北緯30.1度以南）は差し込み枠へ
+    const inset = id === 47 || (id === 46 && p[0].every(([, lat]) => lat < 30.1));
+    const ring = p[0].map(c => proj(c, inset));
+    if (inset) for (const [x, y] of ring) { insetBox[0] = Math.min(insetBox[0], x); insetBox[1] = Math.min(insetBox[1], y); insetBox[2] = Math.max(insetBox[2], x); insetBox[3] = Math.max(insetBox[3], y); }
+    return ring;
+  }) };
 });
 let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
 for (const f of feats) for (const r of f.polys) for (const [x, y] of r) { minX = Math.min(minX, x); minY = Math.min(minY, y); maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); }
@@ -65,5 +72,9 @@ const res = feats.sort((a, b) => a.id - b.id).map(f => {
   const d = rings.map(r => 'M' + r.map(([x, y]) => x.toFixed(1) + ',' + y.toFixed(1)).join('L') + 'Z').join('');
   return { id: f.id, name: f.name, cx: +cx.toFixed(1), cy: +cy.toFixed(1), d };
 });
-fs.writeFileSync(out, '// 生成元: dataofjapan/land (japan.geojson) を簡略化\nwindow.JAPAN_MAP = ' + JSON.stringify({ width: Wc, height: H, prefs: res }) + ';\n');
+const inset = {
+  x: +((insetBox[0] - minX) * s + pad).toFixed(1), y: +((insetBox[1] - minY) * s + pad).toFixed(1),
+  w: +((insetBox[2] - insetBox[0]) * s).toFixed(1), h: +((insetBox[3] - insetBox[1]) * s).toFixed(1),
+};
+fs.writeFileSync(out, '// 生成元: dataofjapan/land (japan.geojson) を簡略化\nwindow.JAPAN_MAP = ' + JSON.stringify({ width: Wc, height: H, inset, prefs: res }) + ';\n');
 console.log(Wc, H, res.length, fs.statSync(out).size);

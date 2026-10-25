@@ -43,20 +43,28 @@
     path.setAttribute('fill', colorFor(p.id));
     const title = document.createElementNS(SVG_NS, 'title');
     title.textContent = p.name;
-    g.append(path, title);
+    // 外側の g で位置、内側の piece で持ち上げ・傾きを表す
+    const piece = document.createElementNS(SVG_NS, 'g');
+    piece.classList.add('piece');
+    piece.append(path, title);
+    g.append(piece);
     prefLayer.append(g);
-    prefs.set(p.id, { ...p, g, dx: 0, dy: 0, next: 0 });
+    prefs.set(p.id, {
+      ...p, g, piece, next: 0,
+      dx: 0, dy: 0, vx: 0, vy: 0, mode: 'idle',
+      lift: 0, liftT: 0, tilt: 0, moveX: 0, squash: -1, hover: false,
+    });
   }
 
-  // 沖縄の枠（差し込み図）
+  // 沖縄・奄美の枠（差し込み図）
   {
-    const bb = prefs.get(47).g.getBBox();
+    const bb = MAP.inset;
     const r = document.createElementNS(SVG_NS, 'rect');
     const m = 10;
     r.setAttribute('x', bb.x - m);
     r.setAttribute('y', bb.y - m);
-    r.setAttribute('width', bb.width + m * 2);
-    r.setAttribute('height', bb.height + m * 2);
+    r.setAttribute('width', bb.w + m * 2);
+    r.setAttribute('height', bb.h + m * 2);
     r.setAttribute('rx', 6);
     r.classList.add('inset-frame');
     insetLayer.append(r);
@@ -88,6 +96,97 @@
     try { localStorage.setItem(STORE_KEY, JSON.stringify([...found])); } catch (e) { /* noop */ }
   }
   foundCount.textContent = found.size;
+
+  // ---------- 効果音（Web Audio で合成） ----------
+  const Sound = (() => {
+    const MUTE_KEY = 'play_map.muted';
+    let ctx = null;
+    let muted = false;
+    try { muted = localStorage.getItem(MUTE_KEY) === '1'; } catch (e) { /* noop */ }
+
+    function unlock() {
+      if (muted) return;
+      if (!ctx) {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return;
+        ctx = new AC();
+      }
+      if (ctx.state === 'suspended') ctx.resume();
+    }
+    function ready() { return ctx && !muted && ctx.state === 'running'; }
+
+    // 周波数を f0 → f1 に動かす短い音
+    function tone(f0, f1, dur, vol, type = 'sine', delay = 0) {
+      if (!ready()) return;
+      const t = ctx.currentTime + delay;
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = type;
+      o.frequency.setValueAtTime(f0, t);
+      o.frequency.exponentialRampToValueAtTime(Math.max(1, f1), t + dur);
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(vol, t + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      o.connect(g).connect(ctx.destination);
+      o.start(t);
+      o.stop(t + dur + 0.02);
+    }
+    // ノイズ（シュワー、ドカン）
+    function noise(dur, freq, vol, delay = 0, sweepTo = freq) {
+      if (!ready()) return;
+      const t = ctx.currentTime + delay;
+      const len = Math.ceil(ctx.sampleRate * dur);
+      const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+      const data = buf.getChannelData(0);
+      for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      const bp = ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.Q.value = 1.2;
+      bp.frequency.setValueAtTime(freq, t);
+      bp.frequency.exponentialRampToValueAtTime(sweepTo, t + dur);
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(vol, t);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      src.connect(bp).connect(g).connect(ctx.destination);
+      src.start(t);
+    }
+
+    const EFFECT_SOUNDS = {
+      fountain() { noise(0.7, 900, 0.12, 0, 3000); tone(300, 700, 0.25, 0.06, 'triangle'); },
+      sprout() { tone(180, 900, 0.4, 0.1, 'triangle'); tone(900, 1400, 0.08, 0.05, 'sine', 0.38); },
+      burst() { noise(0.4, 500, 0.35, 0, 120); tone(140, 40, 0.35, 0.25); },
+      rain() { for (let i = 0; i < 10; i++) tone(rand(900, 1700), rand(700, 1200), 0.06, 0.04, 'sine', i * 0.09); },
+      orbit() { for (let i = 0; i < 4; i++) tone(500 + i * 120, 700 + i * 120, 0.1, 0.05, 'triangle', i * 0.08); },
+      float() { tone(400, 640, 0.5, 0.06); tone(520, 800, 0.5, 0.04, 'sine', 0.12); },
+      march() { for (let i = 0; i < 6; i++) tone(i % 2 ? 260 : 320, 200, 0.05, 0.08, 'square', i * 0.13); },
+      trail() { for (let i = 0; i < 3; i++) tone(700 - i * 120, 500 - i * 100, 0.07, 0.05, 'sine', i * 0.1); },
+      spin() { tone(300, 1200, 0.5, 0.05, 'sawtooth'); },
+    };
+
+    return {
+      get muted() { return muted; },
+      setMuted(v) {
+        muted = v;
+        try { localStorage.setItem(MUTE_KEY, v ? '1' : '0'); } catch (e) { /* noop */ }
+        if (!v) unlock();
+      },
+      unlock,
+      pickup() { tone(480, 780, 0.08, 0.09); },
+      drop() { tone(200, 90, 0.14, 0.14); noise(0.05, 700, 0.04); },
+      snap() { tone(1300, 1250, 0.03, 0.08, 'square'); tone(1700, 1650, 0.04, 0.07, 'square', 0.05); },
+      bump() { tone(260, 160, 0.06, 0.07); },
+      reset() { [523, 659, 784, 1047].forEach((f, i) => tone(f, f, 0.12, 0.06, 'triangle', i * 0.07)); },
+      effect(type) { (EFFECT_SOUNDS[type] || (() => {}))(); },
+    };
+  })();
+
+  function buzz(pattern) {
+    if (!Sound.muted && navigator.vibrate) {
+      try { navigator.vibrate(pattern); } catch (e) { /* noop */ }
+    }
+  }
 
   // ---------- パーティクル ----------
   const rand = (a, b) => a + Math.random() * (b - a);
@@ -395,8 +494,114 @@
     const fx = factory(pref, emojiStr.split(/\s+/), color);
     effects.push(fx);
     showBubble(pref, label);
+    Sound.effect(type);
     markFound(`${pref.id}:${idx}`);
     return fx;
+  }
+
+  // ---------- 動き（持ち上げ・傾き・投げ・ばね） ----------
+  const active = new Set(); // 動きの計算が必要な都道府県
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+  // 画面に見えている範囲（SVG座標）
+  function visibleBounds() {
+    const m = svg.getScreenCTM().inverse();
+    const tl = { x: m.e, y: m.f };
+    const br = { x: m.a * innerWidth + m.e, y: m.d * innerHeight + m.f };
+    return { x0: tl.x, y0: tl.y, x1: br.x, y1: br.y };
+  }
+
+  // 中心が画面の外に出ないようにする。はみ出したら true
+  function keepInside(pref) {
+    const b = visibleBounds();
+    const m = 14;
+    const x = pref.cx + pref.dx;
+    const y = pref.cy + pref.dy;
+    const cx = clamp(x, b.x0 + m, b.x1 - m);
+    const cy = clamp(y, b.y0 + m + 30, b.y1 - m);
+    const hitX = cx !== x;
+    const hitY = cy !== y;
+    if (hitX) pref.dx = cx - pref.cx;
+    if (hitY) pref.dy = cy - pref.cy;
+    return { hitX, hitY };
+  }
+
+  function wake(pref) { active.add(pref); }
+
+  function settle(pref) {
+    pref.squash = 0; // ぷるんと着地
+    Sound.drop();
+    buzz(12);
+  }
+
+  function goHome(pref, withSnap) {
+    pref.mode = 'home';
+    if (withSnap) { Sound.snap(); buzz([8, 30, 8]); }
+    wake(pref);
+  }
+
+  const HOME_SNAP = 16; // 元の場所にこれ以内で離すと吸い付く（SVG単位）
+
+  function stepPref(pref, f) {
+    // 位置
+    if (pref.mode === 'glide') {
+      pref.dx += pref.vx * f;
+      pref.dy += pref.vy * f;
+      const fr = Math.pow(0.93, f);
+      pref.vx *= fr;
+      pref.vy *= fr;
+      const { hitX, hitY } = keepInside(pref);
+      if (hitX) { pref.vx *= -0.55; Sound.bump(); }
+      if (hitY) { pref.vy *= -0.55; Sound.bump(); }
+      if (Math.hypot(pref.vx, pref.vy) < 0.25) {
+        if (Math.hypot(pref.dx, pref.dy) < HOME_SNAP) goHome(pref, true);
+        else { pref.mode = 'idle'; settle(pref); }
+      }
+    } else if (pref.mode === 'home') {
+      // ばね（少しだけ行き過ぎて戻る）
+      pref.vx += (-0.09 * pref.dx - 0.32 * pref.vx) * f;
+      pref.vy += (-0.09 * pref.dy - 0.32 * pref.vy) * f;
+      pref.dx += pref.vx * f;
+      pref.dy += pref.vy * f;
+      if (Math.hypot(pref.dx, pref.dy) < 0.3 && Math.hypot(pref.vx, pref.vy) < 0.3) {
+        pref.dx = pref.dy = pref.vx = pref.vy = 0;
+        pref.mode = 'idle';
+        pref.squash = 0;
+      }
+    }
+    setOffset(pref, pref.dx, pref.dy);
+
+    // 見た目（持ち上げ・傾き・着地のぷるん）
+    pref.lift += (pref.liftT - pref.lift) * (1 - Math.pow(0.7, f));
+    const tiltT = pref.mode === 'drag' ? clamp(pref.moveX * 1.4, -12, 12) : 0;
+    pref.tilt += (tiltT - pref.tilt) * (1 - Math.pow(0.78, f));
+    let sx = 1;
+    let sy = 1;
+    if (pref.squash >= 0) {
+      pref.squash += f;
+      const j = 0.09 * Math.exp(-pref.squash / 7) * Math.cos(pref.squash / 2.4);
+      sx += j;
+      sy -= j;
+      if (pref.squash > 45) pref.squash = -1;
+    }
+    const s = 1 + pref.lift * 0.09;
+    pref.piece.style.transform = `rotate(${pref.tilt}deg) scale(${s * sx}, ${s * sy})`;
+    if (pref.lift > 0.02) {
+      const l = pref.lift;
+      pref.piece.style.filter =
+        `brightness(${1 + l * 0.08}) drop-shadow(0 ${2 + l * 9}px ${2 + l * 6}px rgba(20, 50, 70, ${0.12 + l * 0.2}))`;
+    } else {
+      pref.piece.style.filter = '';
+    }
+    pref.moveX *= Math.pow(0.8, f);
+
+    const still = pref.mode === 'idle' && pref.squash < 0 &&
+      Math.abs(pref.lift - pref.liftT) < 0.005 && Math.abs(pref.tilt) < 0.05;
+    if (still) {
+      pref.lift = pref.liftT;
+      pref.tilt = 0;
+      active.delete(pref);
+    }
   }
 
   // ---------- メインループ ----------
@@ -404,6 +609,7 @@
   function frame(now) {
     const f = Math.min(3, (now - lastTime) / (1000 / 60));
     lastTime = now;
+    for (const pref of active) stepPref(pref, f);
     for (let i = effects.length - 1; i >= 0; i--) {
       if (!effects[i].update(f)) effects.splice(i, 1);
     }
@@ -413,63 +619,298 @@
   }
   requestAnimationFrame(frame);
 
-  // ---------- ドラッグ ----------
-  let drag = null;
+  // ---------- ドラッグ（マルチタッチ対応） ----------
+  const drags = new Map(); // pointerId -> drag
+  const hint = document.getElementById('hint');
 
-  function toSvg(e) {
+  function toSvg(x, y) {
     const m = svg.getScreenCTM().inverse();
-    return { x: m.a * e.clientX + m.c * e.clientY + m.e, y: m.b * e.clientX + m.d * e.clientY + m.f };
+    return { x: m.a * x + m.c * y + m.e, y: m.b * x + m.d * y + m.f };
+  }
+
+  // 指先が少しずれても、近くの都道府県をつかめるようにする
+  function prefAt(e) {
+    const direct = e.target.closest && e.target.closest('.pref');
+    if (direct) return prefs.get(+direct.dataset.id);
+    const maxR = e.pointerType === 'touch' ? 28 : 12;
+    for (let r = 6; r <= maxR; r += 6) {
+      for (let k = 0; k < 12; k++) {
+        const a = (k / 12) * Math.PI * 2;
+        const el = document.elementFromPoint(e.clientX + Math.cos(a) * r, e.clientY + Math.sin(a) * r);
+        const g = el && el.closest && el.closest('.pref');
+        if (g) return prefs.get(+g.dataset.id);
+      }
+    }
+    return null;
+  }
+
+  function isHeld(pref) {
+    for (const d of drags.values()) if (d.pref === pref) return true;
+    return false;
   }
 
   svg.addEventListener('pointerdown', (e) => {
-    const g = e.target.closest('.pref');
-    if (!g || drag) return;
+    if (e.button > 0) return;
+    const pref = prefAt(e);
+    if (!pref || isHeld(pref)) return;
     e.preventDefault();
-    const pref = prefs.get(+g.dataset.id);
-    g.classList.remove('returning');
-    prefLayer.append(g); // 最前面へ
-    const pt = toSvg(e);
-    drag = { pref, pointerId: e.pointerId, startX: pt.x, startY: pt.y, ox: pref.dx, oy: pref.dy, fx: null };
+    Sound.unlock();
+    prefLayer.append(pref.g); // 最前面へ
+    const pt = toSvg(e.clientX, e.clientY);
+    drags.set(e.pointerId, {
+      pref, sx: e.clientX, sy: e.clientY,
+      gx: pt.x - pref.dx, gy: pt.y - pref.dy, // つかんだ位置のずれ
+      samples: [{ t: e.timeStamp, x: pt.x, y: pt.y }], fx: null,
+    });
     svg.setPointerCapture(e.pointerId);
+    pref.mode = 'drag';
+    pref.vx = pref.vy = 0;
+    pref.liftT = 1;
+    pref.squash = -1;
+    pref.g.classList.add('dragging');
+    Sound.pickup();
+    buzz(8);
+    wake(pref);
   });
 
   svg.addEventListener('pointermove', (e) => {
-    if (!drag || e.pointerId !== drag.pointerId) return;
-    const pt = toSvg(e);
-    const dx = pt.x - drag.startX;
-    const dy = pt.y - drag.startY;
-    if (!drag.fx) {
-      if (Math.hypot(dx, dy) < 4) return; // クリックだけでは発動しない
-      drag.pref.g.classList.add('dragging');
-      drag.fx = startEffect(drag.pref) || { release() {} };
+    const d = drags.get(e.pointerId);
+    if (!d) return;
+    const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
+    const last = evs.length ? evs[evs.length - 1] : e;
+    const pt = toSvg(last.clientX, last.clientY);
+    for (const ev of (evs.length ? evs : [e])) {
+      const p = toSvg(ev.clientX, ev.clientY);
+      d.samples.push({ t: ev.timeStamp, x: p.x, y: p.y });
     }
-    setOffset(drag.pref, drag.ox + dx, drag.oy + dy);
+    while (d.samples.length > 2 && e.timeStamp - d.samples[0].t > 90) d.samples.shift();
+
+    if (!d.fx) {
+      if (Math.hypot(e.clientX - d.sx, e.clientY - d.sy) < 5) return; // タップだけでは発動しない
+      d.fx = startEffect(d.pref) || { release() {} };
+      if (hint) hint.classList.add('hide');
+    }
+    const pref = d.pref;
+    const nx = pt.x - d.gx;
+    pref.moveX = pref.moveX * 0.5 + (nx - pref.dx) * 0.5;
+    pref.dx = nx;
+    pref.dy = pt.y - d.gy;
+    keepInside(pref);
+    setOffset(pref, pref.dx, pref.dy);
   });
 
   function endDrag(e) {
-    if (!drag || e.pointerId !== drag.pointerId) return;
-    drag.pref.g.classList.remove('dragging');
-    if (drag.fx) drag.fx.release();
-    drag = null;
+    const d = drags.get(e.pointerId);
+    if (!d) return;
+    drags.delete(e.pointerId);
+    const pref = d.pref;
+    pref.g.classList.remove('dragging');
+    pref.liftT = pref.hover ? 0.35 : 0;
+    if (d.fx) d.fx.release();
+
+    // 離した瞬間の速さ（60fps の1フレームあたり）
+    const s = d.samples;
+    let vx = 0;
+    let vy = 0;
+    if (s.length >= 2 && e.timeStamp - s[s.length - 1].t < 60) {
+      const a = s[0];
+      const b = s[s.length - 1];
+      const dt = Math.max(8, b.t - a.t) / (1000 / 60);
+      vx = (b.x - a.x) / dt;
+      vy = (b.y - a.y) / dt;
+    }
+    const speed = Math.hypot(vx, vy);
+    if (speed > 1.2) {
+      const k = Math.min(1, 40 / speed); // 投げすぎ防止
+      pref.vx = vx * k;
+      pref.vy = vy * k;
+      pref.mode = 'glide';
+    } else if (Math.hypot(pref.dx, pref.dy) < HOME_SNAP) {
+      goHome(pref, true);
+    } else {
+      pref.mode = 'idle';
+      if (d.fx) settle(pref);
+      else { pref.squash = 0; Sound.drop(); }
+    }
+    wake(pref);
   }
   svg.addEventListener('pointerup', endDrag);
   svg.addEventListener('pointercancel', endDrag);
+  svg.addEventListener('contextmenu', (e) => e.preventDefault());
+
+  // マウスを乗せると少し浮く
+  svg.addEventListener('pointerover', (e) => {
+    if (e.pointerType !== 'mouse') return;
+    const g = e.target.closest('.pref');
+    if (!g) return;
+    const pref = prefs.get(+g.dataset.id);
+    pref.hover = true;
+    if (pref.mode !== 'drag') { pref.liftT = 0.35; wake(pref); }
+  });
+  svg.addEventListener('pointerout', (e) => {
+    if (e.pointerType !== 'mouse') return;
+    const g = e.target.closest('.pref');
+    if (!g || (e.relatedTarget && g.contains(e.relatedTarget))) return;
+    const pref = prefs.get(+g.dataset.id);
+    pref.hover = false;
+    if (pref.mode !== 'drag') { pref.liftT = 0; wake(pref); }
+  });
 
   // ダブルクリックでその県だけ元の位置へ
   svg.addEventListener('dblclick', (e) => {
     const g = e.target.closest('.pref');
     if (!g) return;
-    const pref = prefs.get(+g.dataset.id);
-    g.classList.add('returning');
-    setOffset(pref, 0, 0);
+    goHome(prefs.get(+g.dataset.id), true);
   });
 
   document.getElementById('reset').addEventListener('click', () => {
+    Sound.unlock();
+    let i = 0;
     for (const pref of prefs.values()) {
-      pref.g.classList.add('returning');
-      setOffset(pref, 0, 0);
+      if (isHeld(pref) || (pref.dx === 0 && pref.dy === 0)) continue;
+      // 少しずつずらして戻すと気持ちいい
+      setTimeout(() => goHome(pref, false), Math.min(i++ * 25, 600));
     }
+    if (i) Sound.reset();
     // 元の重なり順に戻す
     for (const p of MAP.prefs) prefLayer.append(prefs.get(p.id).g);
   });
+
+  // ---------- ズーム・スクロール ----------
+  // 海をドラッグで移動、ホイール／ピンチ／ボタンで拡大縮小
+  const view = { x: 0, y: 0, w: MAP.width, h: MAP.height };
+  const ZOOM_MIN_W = MAP.width / 6;
+  const ZOOM_MAX_W = MAP.width * 1.1;
+
+  function applyView() {
+    view.x = clamp(view.x, -view.w / 2, MAP.width - view.w / 2);
+    view.y = clamp(view.y, -view.h / 2, MAP.height - view.h / 2);
+    svg.setAttribute('viewBox', `${view.x} ${view.y} ${view.w} ${view.h}`);
+  }
+
+  // 画面上の (cx, cy) の下にある地図上の点を動かさずに、幅を w にする
+  function zoomTo(w, cx, cy) {
+    const before = toSvg(cx, cy);
+    w = clamp(w, ZOOM_MIN_W, ZOOM_MAX_W);
+    view.w = w;
+    view.h = w * MAP.height / MAP.width;
+    applyView();
+    const after = toSvg(cx, cy);
+    view.x += before.x - after.x;
+    view.y += before.y - after.y;
+    applyView();
+  }
+  const zoomBy = (factor, cx, cy) => zoomTo(view.w / factor, cx, cy);
+
+  // 地図上の点 p が画面の (cx, cy) に来るように動かす
+  function pinTo(p, cx, cy) {
+    const q = toSvg(cx, cy);
+    view.x += p.x - q.x;
+    view.y += p.y - q.y;
+    applyView();
+  }
+
+  let zoomAnim = null;
+  function animateView(target) {
+    cancelAnimationFrame(zoomAnim);
+    const from = { ...view };
+    const t0 = performance.now();
+    const step = (now) => {
+      const t = Math.min(1, (now - t0) / 380);
+      const e = 1 - Math.pow(1 - t, 3);
+      for (const k of ['x', 'y', 'w', 'h']) view[k] = from[k] + (target[k] - from[k]) * e;
+      applyView();
+      if (t < 1) zoomAnim = requestAnimationFrame(step);
+    };
+    zoomAnim = requestAnimationFrame(step);
+  }
+
+  svg.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    cancelAnimationFrame(zoomAnim);
+    const isMouseWheel = e.deltaMode !== 0 || (e.deltaX === 0 && Math.abs(e.deltaY) >= 50);
+    if (e.ctrlKey || isMouseWheel) {
+      // ピンチ（トラックパッド）やマウスホイールは拡大縮小
+      const k = e.ctrlKey ? 0.012 : 0.0018;
+      const dy = e.deltaMode === 1 ? e.deltaY * 30 : e.deltaY;
+      zoomBy(Math.exp(-dy * k), e.clientX, e.clientY);
+    } else {
+      // 2本指スクロールは移動
+      const u = view.w / svg.getBoundingClientRect().width;
+      view.x += e.deltaX * u;
+      view.y += e.deltaY * u;
+      applyView();
+    }
+  }, { passive: false });
+
+  const pans = new Map(); // pointerId -> {x, y}（海をつかんでいる指）
+  let panState = null;
+
+  function resetPanState() {
+    const pts = [...pans.values()];
+    if (pts.length === 0) { panState = null; return; }
+    const mid = { x: pts.reduce((s, p) => s + p.x, 0) / pts.length, y: pts.reduce((s, p) => s + p.y, 0) / pts.length };
+    const dist = pts.length > 1 ? Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) : 0;
+    panState = { anchor: toSvg(mid.x, mid.y), dist, w: view.w };
+  }
+
+  svg.addEventListener('pointerdown', (e) => {
+    if (drags.has(e.pointerId) || e.button > 0) return;
+    if (prefAt(e)) return;
+    e.preventDefault();
+    cancelAnimationFrame(zoomAnim);
+    svg.setPointerCapture(e.pointerId);
+    pans.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    svg.classList.add('panning');
+    resetPanState();
+  });
+
+  svg.addEventListener('pointermove', (e) => {
+    if (!pans.has(e.pointerId)) return;
+    pans.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const pts = [...pans.values()];
+    const mid = { x: pts.reduce((s, p) => s + p.x, 0) / pts.length, y: pts.reduce((s, p) => s + p.y, 0) / pts.length };
+    if (pts.length > 1 && panState.dist > 0) {
+      const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+      view.w = clamp(panState.w * panState.dist / dist, ZOOM_MIN_W, ZOOM_MAX_W);
+      view.h = view.w * MAP.height / MAP.width;
+    }
+    pinTo(panState.anchor, mid.x, mid.y);
+  });
+
+  function endPan(e) {
+    if (!pans.has(e.pointerId)) return;
+    pans.delete(e.pointerId);
+    if (!pans.size) svg.classList.remove('panning');
+    resetPanState();
+  }
+  svg.addEventListener('pointerup', endPan);
+  svg.addEventListener('pointercancel', endPan);
+
+  // 海をダブルクリック（ダブルタップ）で拡大
+  svg.addEventListener('dblclick', (e) => {
+    if (e.target.closest('.pref')) return;
+    zoomBy(1.8, e.clientX, e.clientY);
+  });
+
+  const stageCenter = () => {
+    const r = svg.getBoundingClientRect();
+    return [r.left + r.width / 2, r.top + r.height / 2];
+  };
+  document.getElementById('zoom-in').addEventListener('click', () => zoomBy(1.5, ...stageCenter()));
+  document.getElementById('zoom-out').addEventListener('click', () => zoomBy(1 / 1.5, ...stageCenter()));
+  document.getElementById('zoom-fit').addEventListener('click', () => {
+    animateView({ x: 0, y: 0, w: MAP.width, h: MAP.height });
+  });
+
+  const muteBtn = document.getElementById('mute');
+  function renderMute() {
+    muteBtn.textContent = Sound.muted ? '🔇' : '🔊';
+    muteBtn.setAttribute('aria-label', Sound.muted ? '音を出す' : '音を消す');
+  }
+  muteBtn.addEventListener('click', () => {
+    Sound.setMuted(!Sound.muted);
+    renderMute();
+  });
+  renderMute();
 })();
