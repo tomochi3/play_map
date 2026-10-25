@@ -1,0 +1,148 @@
+:root {
+  --sea-1: #bfe3f5;
+  --sea-2: #e8f6fc;
+  --ink: #1f3a4d;
+  --stroke: #ffffff;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  font-family: "Hiragino Maru Gothic ProN", "Hiragino Kaku Gothic ProN", "Yu Gothic", "Meiryo", sans-serif;
+  color: var(--ink);
+  background: radial-gradient(ellipse at center, var(--sea-2) 0%, var(--sea-1) 100%);
+}
+
+.bar {
+  position: fixed;
+  inset: 0 0 auto 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 16px;
+  padding: 10px 16px;
+  z-index: 5;
+  pointer-events: none;
+}
+.bar > * { pointer-events: auto; }
+.bar h1 { margin: 0; font-size: 20px; letter-spacing: .05em; }
+.hint { margin: 0; font-size: 13px; opacity: .75; flex: 1 1 260px; }
+.controls { display: flex; align-items: center; gap: 12px; }
+.found { font-size: 13px; }
+.found b { font-size: 16px; }
+
+#reset {
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 14px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--ink);
+  color: #fff;
+  cursor: pointer;
+}
+#reset:hover { opacity: .85; }
+
+.stage {
+  position: fixed;
+  inset: 0;
+  padding: 56px 16px 16px;
+}
+
+#map {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  overflow: visible;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.pref { cursor: grab; }
+.pref path {
+  stroke: var(--stroke);
+  stroke-width: .8;
+  stroke-linejoin: round;
+  transition: filter .15s;
+}
+.pref:hover path { filter: brightness(1.12); }
+.pref.dragging { cursor: grabbing; }
+.pref.dragging path {
+  filter: brightness(1.15) drop-shadow(0 6px 6px rgba(0, 0, 0, .3));
+}
+.pref.returning { transition: transform .6s cubic-bezier(.3, 1.4, .5, 1); }
+
+.inset-frame {
+  fill: none;
+  stroke: var(--ink);
+  stroke-opacity: .35;
+  stroke-width: 1;
+  stroke-dasharray: 5 4;
+}
+
+/* 演出レイヤー */
+#fx {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 10;
+  overflow: hidden;
+}
+.p {
+  position: absolute;
+  left: 0;
+  top: 0;
+  line-height: 1;
+  will-change: transform, opacity;
+  white-space: nowrap;
+}
+.drop {
+  position: absolute;
+  left: 0;
+  top: 0;
+  border-radius: 50% 50% 50% 50% / 60% 60% 40% 40%;
+  will-change: transform, opacity;
+  box-shadow: inset -2px -2px 0 rgba(0, 0, 0, .12);
+}
+
+.bubble {
+  position: absolute;
+  z-index: 1;
+  left: 0;
+  top: 0;
+  padding: 6px 12px;
+  border-radius: 14px;
+  background: #fff;
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: bold;
+  white-space: nowrap;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .18);
+  will-change: transform, opacity;
+}
+.bubble small {
+  display: block;
+  font-size: 11px;
+  font-weight: normal;
+  opacity: .7;
+}
+.bubble::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -7px;
+  margin-left: -7px;
+  border: 7px solid transparent;
+  border-bottom: 0;
+  border-top-color: #fff;
+}
+
+@media (max-width: 600px) {
+  .bar h1 { font-size: 16px; }
+  .hint { font-size: 11px; }
+  .stage { padding-top: 110px; }
+}

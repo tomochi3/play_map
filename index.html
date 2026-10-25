@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>あそべる日本地図</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header class="bar">
+    <h1>あそべる日本地図</h1>
+    <p class="hint">都道府県をドラッグしてみよう！ 動かすたびに演出が変わるよ（各5種類）</p>
+    <div class="controls">
+      <span class="found">発見 <b id="found-count">0</b> / <span id="found-total">235</span></span>
+      <button id="reset" type="button">元に戻す</button>
+    </div>
+  </header>
+
+  <main class="stage">
+    <svg id="map" role="img" aria-label="日本地図"></svg>
+  </main>
+
+  <div id="fx" aria-hidden="true"></div>
+
+  <script src="js/map-data.js"></script>
+  <script src="js/effects-data.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>
